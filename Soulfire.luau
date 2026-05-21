@@ -1,5 +1,5 @@
 --[[
-    Interface.luau — Unified Soulfire UI Library.
+    Interface.luau — Unified, fully independent Soulfire UI Library.
 
     Provides:
       • Interface.New()          — thin Instance.new() wrapper with defaults & inline children
@@ -54,6 +54,10 @@ local DefaultProperties = {
         SortOrder = Enum.SortOrder.LayoutOrder,
     },
 }
+
+-- ======================== UTILITIES ========================
+
+local gethui = gethui and gethui() or function() return game:GetService("CoreGui") end
 
 -- ======================== ICON TYPES ========================
 
@@ -307,11 +311,12 @@ function KeyInterface:_track(connection)
     return connection
 end
 
-function KeyInterface.new()
+function KeyInterface.new(config: { [string]: any }?)
     local self = setmetatable({}, KeyInterface)
     self.UI = {}
     self._connections = {}
     self._destroyed = false
+    self._config = config or {}
 
     self:_buildUI()
     self:_applyEffects()
@@ -327,7 +332,7 @@ function KeyInterface:_buildUI()
     self.UI["Root"] = Interface.New("ScreenGui", {
         Name = "SoulfireKeyUi",
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-        Parent = wax.shared.gethui(),
+        Parent = gethui(),
     })
 
     -- Mainframe
@@ -1026,7 +1031,7 @@ function KeyInterface:makeDraggable(gui: GuiObject)
         end
     end))
 
-    self:_track(wax.shared.UserInputService.InputChanged:Connect(function(input)
+    self:_track(game:GetService("UserInputService").InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             update(input)
         end
@@ -1063,7 +1068,7 @@ local function applyClickEffect(self, button)
         local duration = 0.5
 
         local connection
-        connection = wax.shared.RunService.RenderStepped:Connect(function()
+        connection = game:GetService("RunService").RenderStepped:Connect(function()
             local elapsed = tick() - startTime
             local progress = math.min(elapsed / duration, 1)
             ring.Size = UDim2.new(0, 100 * progress, 0, 100 * progress)
@@ -1112,26 +1117,52 @@ function KeyInterface:_applyEffects()
 end
 
 function KeyInterface:_bindEvents()
-    local function n(title, desc, dur, status)
-        wax.shared.Sonner.notify(title, desc, dur, status)
+    local config = self._config or {}
+    local discordLink = config.DiscordLink or "https://discord.gg/ddxY6P3Nmp"
+    
+    local notify = config.notify or function(title, desc, dur, status)
+        Interface.Sonner.notify(title, desc, dur, status)
     end
 
     -- Exit Button
     self:_track(self.UI["ExitButton"].MouseButton1Click:Connect(function()
+        if config.OnClose then
+            pcall(config.OnClose)
+        end
         self:Destroy()
     end))
 
     -- Get Key Button
     self:_track(self.UI["GetKeyButton"].MouseButton1Click:Connect(function()
-        local result = wax.shared.Auth:GetLink()
-        if result and result.success then
-            self.UI["KeyInputBox"].Text = result.url
-            n("Key Link Copied", "Open the link in a browser to get your key!", 3, "info")
+        if config.OnGetKey then
+            local success, result = pcall(config.OnGetKey)
+            if success then
+                if typeof(result) == "string" then
+                    self.UI["KeyInputBox"].Text = result
+                    if setclipboard then
+                        pcall(setclipboard, result)
+                    end
+                    notify("Key Link Copied", "Open the link in a browser to get your key!", 3, "info")
+                elseif typeof(result) == "table" then
+                    if result.success then
+                        if result.url then
+                            self.UI["KeyInputBox"].Text = result.url
+                            if setclipboard then
+                                pcall(setclipboard, result.url)
+                            end
+                        end
+                        notify(result.title or "Key Link Copied", result.message or "Open the link in a browser to get your key!", 3, "info")
+                    else
+                        notify("Failed to Copy Link", result.error or "Please join via the Premium button!", 3, "error")
+                    end
+                else
+                    notify("Failed to Copy Link", "Please join via the Premium button!", 3, "error")
+                end
+            else
+                notify("Error", tostring(result), 3, "error")
+            end
         else
-            n("Failed to Copy Link", "Please join via the Premium button!", 3, "error")
-        end
-        if result and result.error then
-            n("Error", result.error, 3, "error")
+            notify("Auth Error", "Authentication system is not available.", 3, "error")
         end
     end))
 
@@ -1139,33 +1170,55 @@ function KeyInterface:_bindEvents()
     self:_track(self.UI["CheckKeyButton"].MouseButton1Click:Connect(function()
         local inputKey = self.UI["KeyInputBox"].Text
         if inputKey == "" then
-            n("No Key", "Please enter a key first!", 3, "warning")
+            notify("No Key", "Please enter a key first!", 3, "warning")
             return
         end
-        n("Checking Key", "Verifying your key...", 3, "searching")
-        local result = wax.shared.Auth:CheckKey(inputKey)
-        if result and result.success then
-            n("Valid Key!", "Access granted — welcome to Soulfire.", 2, "success")
-            task.delay(2, function() self:Destroy() end)
-            return
-        end
-        if result and result.error then
-            n("Error", result.error, 3, "error")
+        notify("Checking Key", "Verifying your key...", 3, "searching")
+        
+        if config.OnCheckKey then
+            task.spawn(function()
+                local success, result = pcall(config.OnCheckKey, inputKey)
+                if success then
+                    if typeof(result) == "table" then
+                        if result.success then
+                            notify("Valid Key!", result.message or "Access granted — welcome to Soulfire.", 2, "success")
+                            task.delay(2, function() self:Destroy() end)
+                        else
+                            notify("Invalid Key", result.error or "The key you entered is not valid.", 3, "error")
+                            self.UI["KeyInputBox"].Text = ""
+                        end
+                    elseif typeof(result) == "boolean" then
+                        if result then
+                            notify("Valid Key!", "Access granted — welcome to Soulfire.", 2, "success")
+                            task.delay(2, function() self:Destroy() end)
+                        else
+                            notify("Invalid Key", "The key you entered is not valid.", 3, "error")
+                            self.UI["KeyInputBox"].Text = ""
+                        end
+                    else
+                        notify("Invalid Key", "The key you entered is not valid.", 3, "error")
+                        self.UI["KeyInputBox"].Text = ""
+                    end
+                else
+                    notify("Error", tostring(result), 3, "error")
+                    self.UI["KeyInputBox"].Text = ""
+                end
+            end)
         else
-            n("Invalid Key", "The key you entered is not valid.", 3, "error")
+            notify("Auth Error", "Authentication system is not available.", 3, "error")
+            self.UI["KeyInputBox"].Text = ""
         end
-        self.UI["KeyInputBox"].Text = ""
     end))
 
     -- Buy Button
     self:_track(self.UI["BuyButton"].MouseButton1Click:Connect(function()
         if setclipboard then
-            setclipboard(wax.shared.DiscordLink)
-            n("Link Copied", "Open the link in a browser to upgrade!", 3, "gold")
+            pcall(setclipboard, discordLink)
+            notify("Link Copied", "Open the link in a browser to upgrade!", 3, "gold")
         else
-            n("Failed to Copy Link", "Your executor doesn't support setclipboard.", 3, "error")
+            notify("Failed to Copy Link", "Your executor doesn't support setclipboard.", 3, "error")
         end
-        self.UI["KeyInputBox"].Text = wax.shared.DiscordLink
+        self.UI["KeyInputBox"].Text = discordLink
     end))
 end
 
@@ -1233,7 +1286,7 @@ function Sonner.init()
         Name = "Sonner",
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
         DisplayOrder = 100000000,
-        Parent = wax.shared.gethui(),
+        Parent = gethui(),
     })
 
     Sonner.Container = Interface.New("Frame", {
